@@ -1,0 +1,36 @@
+services:
+  paperclip:
+    build: .
+    container_name: paperclip
+    restart: unless-stopped
+    expose:
+      - "3100"
+    ports:
+      - "3100:3100"
+    volumes:
+      - paperclip_data:/paperclip
+    env_file:
+      - .env
+
+  caddy:
+    image: caddy:alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    env_file:
+      - .env
+    command: caddy reverse-proxy --from ${CADDY_DOMAIN} --to paperclip:3100
+    depends_on:
+      - paperclip
+    profiles:
+      - https
+
+volumes:
+  paperclip_data:
+  caddy_data:
+  caddy_config:
