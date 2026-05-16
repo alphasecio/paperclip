@@ -2,6 +2,8 @@
 
 Deployment templates for [Paperclip](https://github.com/paperclipai/paperclip) — the open-source AI agent orchestration platform for autonomous agent companies.
 
+![Paperclip](./paperclip.png)
+
 ## Deployments
 
 | Platform | Folder | Guide |
@@ -9,7 +11,7 @@ Deployment templates for [Paperclip](https://github.com/paperclipai/paperclip) �
 | [Railway](https://railway.com/?referralCode=alphasec) | [`/railway`](./railway) | [README](./railway/README.md) |
 | [DigitalOcean](https://m.do.co/c/5552e11c260f) | [`/digitalocean`](./digitalocean) | [README](./digitalocean/README.md) |
 
-## Choosing a platform
+## Choosing a Platform
 
 **Railway** — One-click deploy, no server management, automatic TLS. Costs ~$7-10/month depending on whether you use embedded or external PostgreSQL.
 
