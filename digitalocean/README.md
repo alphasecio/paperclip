@@ -94,5 +94,5 @@ docker compose up -d --build
 ## Related
 
 - [Deploy Paperclip on Railway](../railway/README.md)
-- [Stop Hiring, Start Orchestrating: Running an AI Agent Company with Paperclip on DigitalOcean](https://alphasec.io?stop-hiring-start-orchestrating-running-an-ai-agent-company-with-paperclip-on-digitalocean)
+- [Stop Hiring, Start Orchestrating: Running an AI Agent Company with Paperclip on DigitalOcean](https://alphasec.io/stop-hiring-start-orchestrating-running-an-ai-agent-company-with-paperclip-on-digitalocean)
 - [Paperclip documentation](https://docs.paperclip.ing)
