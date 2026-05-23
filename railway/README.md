@@ -6,11 +6,11 @@ See [this](https://alphasec.io/stop-hiring-start-orchestrating-running-an-ai-age
 
 ## Deploy with Embedded Postgres
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/-jFwbc?referralCode=alphasec)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/paperclip-ai-agent-company-lite?referralCode=alphasec)
 
 ## Deploy with External Postgres
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/QRLyw2?referralCode=alphasec)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/paperclip-ai-agent-company?referralCode=alphasec)
 
 ## Prerequisites
 
