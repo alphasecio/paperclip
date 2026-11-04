@@ -62,7 +62,7 @@ SERVER_PID=$$
   until [ "$(status)" = "ready" ]; do sleep 30; done
   gosu node touch "$CLAIMED"
   echo "entrypoint: admin claimed, restarting to disable sign-up"
-  kill -TERM "$SERVER_PID"
+  kill -KILL "$SERVER_PID"
 ) &
 
 exec upstream-entrypoint.sh "$@"
