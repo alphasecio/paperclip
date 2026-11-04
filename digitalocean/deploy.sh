@@ -3,9 +3,24 @@ set -euo pipefail
 
 NAME="${1:-paperclip}"
 REGION="${REGION:-nyc3}"
-SIZE="${SIZE:-s-2vcpu-4gb}"
+SIZE="${SIZE:-s-1vcpu-2gb}"
 IMAGE="${IMAGE:-ubuntu-24-04-x64}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${DIR}/.env"
+KNOWN_HOSTS="${DIR}/.known_hosts"
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${KNOWN_HOSTS}" -o ConnectTimeout=10)
+
+get_env() { grep "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- || true; }
+
+set_env() {
+  K="$1" V="$2" awk '
+    index($0, ENVIRON["K"] "=") == 1 { print ENVIRON["K"] "=" ENVIRON["V"]; done = 1; next }
+    { print }
+    END { if (!done) print ENVIRON["K"] "=" ENVIRON["V"] }
+  ' "$ENV_FILE" > "${ENV_FILE}.tmp"
+  mv "${ENV_FILE}.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+}
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -15,44 +30,34 @@ if ! command -v doctl &>/dev/null; then
   exit 1
 fi
 
-if [ ! -f "${DIR}/.env" ]; then
-  cp "${DIR}/.env.example" "${DIR}/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  cp "${DIR}/.env.example" "$ENV_FILE"
 fi
+chmod 600 "$ENV_FILE"
 
-# Auto-generate secrets if not already set
-if ! grep -q "^BETTER_AUTH_SECRET=.\+" "${DIR}/.env"; then
-  sed -i.bak "s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$(openssl rand -hex 32)|" "${DIR}/.env"
-  echo "[+] Generated BETTER_AUTH_SECRET."
-fi
-if ! grep -q "^PAPERCLIP_AGENT_JWT_SECRET=.\+" "${DIR}/.env"; then
-  sed -i.bak "s|^PAPERCLIP_AGENT_JWT_SECRET=.*|PAPERCLIP_AGENT_JWT_SECRET=$(openssl rand -hex 32)|" "${DIR}/.env"
-  echo "[+] Generated PAPERCLIP_AGENT_JWT_SECRET."
-fi
-rm -f "${DIR}/.env.bak"
+for key in BETTER_AUTH_SECRET PAPERCLIP_AGENT_JWT_SECRET; do
+  if [ -z "$(get_env "$key")" ]; then
+    set_env "$key" "$(openssl rand -hex 32)"
+    echo "[+] Generated ${key}."
+  fi
+done
 
-source "${DIR}/.env"
-
-
-# Domain prompt — always show, display current value if set
-CURRENT_DOMAIN=$(grep "^CADDY_DOMAIN=.\+" "${DIR}/.env" | cut -d= -f2 || true)
+# Domain
+CURRENT_DOMAIN="$(get_env CADDY_DOMAIN)"
 echo ""
-if [ -n "${CURRENT_DOMAIN}" ]; then
+if [ -n "$CURRENT_DOMAIN" ]; then
   read -r -p "[?] Domain for HTTPS [${CURRENT_DOMAIN}] (Enter to keep, or type new): " DOMAIN_INPUT
-  DOMAIN_INPUT="${DOMAIN_INPUT:-${CURRENT_DOMAIN}}"
+  DOMAIN_INPUT="${DOMAIN_INPUT:-$CURRENT_DOMAIN}"
 else
   read -r -p "[?] Domain for HTTPS (e.g. paperclip.yourdomain.com), or Enter for IP-only HTTP: " DOMAIN_INPUT
 fi
-if [ -n "$DOMAIN_INPUT" ]; then
-  sed -i.bak "s|^CADDY_DOMAIN=.*|CADDY_DOMAIN=${DOMAIN_INPUT}|" "${DIR}/.env"
-  rm -f "${DIR}/.env.bak"
-  echo "[+] Domain set to ${DOMAIN_INPUT}."
-fi
+set_env CADDY_DOMAIN "$DOMAIN_INPUT"
 
-# LLM provider prompt — always show, skip if already configured
+# LLM provider
 CURRENT_LLM=""
-grep -q "^ANTHROPIC_API_KEY=.\+" "${DIR}/.env" && CURRENT_LLM="Anthropic" || true
-grep -q "^OPENAI_API_KEY=.\+" "${DIR}/.env" && CURRENT_LLM="OpenAI" || true
-grep -q "^GEMINI_API_KEY=.\+" "${DIR}/.env" && CURRENT_LLM="Gemini" || true
+[ -n "$(get_env ANTHROPIC_API_KEY)" ] && CURRENT_LLM="Anthropic"
+[ -n "$(get_env OPENAI_API_KEY)" ] && CURRENT_LLM="OpenAI"
+[ -n "$(get_env GEMINI_API_KEY)" ] && CURRENT_LLM="Gemini"
 echo ""
 if [ -n "$CURRENT_LLM" ]; then
   echo "[+] LLM provider already configured: ${CURRENT_LLM}. Edit .env to change."
@@ -64,26 +69,32 @@ else
   echo "    4) Skip (add later)"
   read -r -p "    Choice [1-4]: " LLM_CHOICE
   case "$LLM_CHOICE" in
-    1) read -r -p "    Anthropic API key: " KEY_INPUT
-       [ -n "$KEY_INPUT" ] && sed -i.bak "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${KEY_INPUT}|" "${DIR}/.env" ;;
-    2) read -r -p "    OpenAI API key: " KEY_INPUT
-       [ -n "$KEY_INPUT" ] && sed -i.bak "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=${KEY_INPUT}|" "${DIR}/.env" ;;
-    3) read -r -p "    Gemini API key: " KEY_INPUT
-       [ -n "$KEY_INPUT" ] && sed -i.bak "s|^GEMINI_API_KEY=.*|GEMINI_API_KEY=${KEY_INPUT}|" "${DIR}/.env" ;;
-    *) echo "[+] Skipping LLM key. Add later via: nano /opt/paperclip/.env" ;;
+    1) KEY_NAME=ANTHROPIC_API_KEY ;;
+    2) KEY_NAME=OPENAI_API_KEY ;;
+    3) KEY_NAME=GEMINI_API_KEY ;;
+    *) KEY_NAME="" ;;
   esac
-  rm -f "${DIR}/.env.bak"
+  if [ -n "$KEY_NAME" ]; then
+    read -r -s -p "    ${KEY_NAME}: " KEY_INPUT
+    echo ""
+    if [ -n "$KEY_INPUT" ]; then
+      set_env "$KEY_NAME" "$KEY_INPUT"
+    fi
+  else
+    echo "[+] Skipping LLM key. Add it later in /opt/paperclip/.env on the droplet."
+  fi
 fi
+
 # ---------------------------------------------------------------------------
 # Create droplet
 # ---------------------------------------------------------------------------
-SSH_KEY_ID=$(doctl compute ssh-key list --format ID --no-header | head -n1)
+SSH_KEY_ID="${SSH_KEY_ID:-$(doctl compute ssh-key list --format ID --no-header | head -n1)}"
 if [ -z "$SSH_KEY_ID" ]; then
   echo "[!] No SSH keys found in your DO account. Upload one first: doctl compute ssh-key import"
   exit 1
 fi
 
-echo "[+] Creating droplet: $NAME ($SIZE in $REGION)..."
+echo "[+] Creating droplet: $NAME ($SIZE in $REGION, SSH key $SSH_KEY_ID)..."
 doctl compute droplet create "$NAME" \
   --region "$REGION" \
   --size "$SIZE" \
@@ -93,28 +104,25 @@ doctl compute droplet create "$NAME" \
 
 IP=$(doctl compute droplet list "$NAME" --format PublicIPv4 --no-header | head -n1)
 echo "[+] Droplet IP: $IP"
+rm -f "$KNOWN_HOSTS"
 
-# Set public URL — use domain if CADDY_DOMAIN is set, otherwise fall back to IP
-source "${DIR}/.env"
-if [ -n "${CADDY_DOMAIN:-}" ]; then
-  PUBLIC_URL="https://${CADDY_DOMAIN}"
-  HOSTNAME="${CADDY_DOMAIN}"
+DOMAIN="$(get_env CADDY_DOMAIN)"
+if [ -n "$DOMAIN" ]; then
+  PUBLIC_URL="https://${DOMAIN}"
+  set_env PAPERCLIP_BIND 127.0.0.1
+  set_env COMPOSE_PROFILES https
 else
   PUBLIC_URL="http://${IP}:3100"
-  HOSTNAME="${IP}"
-  sed -i.bak "s|^CADDY_DOMAIN=.*|CADDY_DOMAIN=|" "${DIR}/.env"
+  set_env PAPERCLIP_BIND 0.0.0.0
+  set_env COMPOSE_PROFILES ""
 fi
-sed -i.bak "s|^PAPERCLIP_PUBLIC_URL=.*|PAPERCLIP_PUBLIC_URL=${PUBLIC_URL}|" "${DIR}/.env"
-sed -i.bak "s|^PAPERCLIP_ALLOWED_HOSTNAMES=.*|PAPERCLIP_ALLOWED_HOSTNAMES=${HOSTNAME}|" "${DIR}/.env"
-rm -f "${DIR}/.env.bak"
+set_env PAPERCLIP_PUBLIC_URL "$PUBLIC_URL"
+
 # ---------------------------------------------------------------------------
 # Wait for SSH
 # ---------------------------------------------------------------------------
 echo "[+] Waiting for SSH..."
-until ssh -o StrictHostKeyChecking=no \
-          -o UserKnownHostsFile=/dev/null \
-          -o ConnectTimeout=5 \
-          root@"$IP" "echo ready" >/dev/null 2>&1; do
+until ssh "${SSH_OPTS[@]}" root@"$IP" "echo ready" >/dev/null 2>&1; do
   sleep 5
 done
 echo "[+] SSH ready."
@@ -123,9 +131,7 @@ echo "[+] SSH ready."
 # Install Docker
 # ---------------------------------------------------------------------------
 echo "[+] Installing Docker..."
-ssh -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    root@"$IP" <<'REMOTE'
+ssh "${SSH_OPTS[@]}" root@"$IP" <<'REMOTE'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -144,18 +150,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
   https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
   > /etc/apt/sources.list.d/docker.list
 apt-get update -qq
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl start unattended-upgrades 2>/dev/null || true
 
-mkdir -p /etc/docker
-cat > /etc/docker/daemon.json <<'EOF'
-{"dns": ["8.8.8.8", "1.1.1.1"]}
-EOF
-systemctl restart docker
 mkdir -p /opt/paperclip
 
-# Add 1GB swap as safety buffer
 if [ ! -f /swapfile ]; then
-  fallocate -l 1G /swapfile
+  fallocate -l 2G /swapfile
   chmod 600 /swapfile
   mkswap /swapfile
   swapon /swapfile
@@ -164,44 +165,30 @@ fi
 REMOTE
 
 # ---------------------------------------------------------------------------
-# Copy files and build
+# Copy files and start
 # ---------------------------------------------------------------------------
-# Strip Windows line endings locally before copy
-[ "$(uname)" = "Darwin" ] && sed -i '' $'s/\r$//' "${DIR}/entrypoint.sh" || sed -i 's/\r$//' "${DIR}/entrypoint.sh"
 echo "[+] Copying files..."
-for f in Dockerfile entrypoint.sh docker-compose.yml .env; do
-  scp -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    "${DIR}/${f}" root@"$IP":/opt/paperclip/"${f}"
-  echo "    copied ${f} ($(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@"$IP" "wc -c < /opt/paperclip/${f}") bytes)"
-done
+scp "${SSH_OPTS[@]}" -q \
+  "${DIR}/Dockerfile" "${DIR}/entrypoint.sh" "${DIR}/docker-compose.yml" "${DIR}/.env" \
+  root@"$IP":/opt/paperclip/
 
 echo "[+] Building and starting Paperclip..."
-ssh -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    root@"$IP" bash -s -- "${CADDY_DOMAIN:-}" <<'REMOTE'
+ssh "${SSH_OPTS[@]}" root@"$IP" <<'REMOTE'
 set -euo pipefail
-CADDY_DOMAIN="$1"
 cd /opt/paperclip
-sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
-docker compose build
-if [ -n "$CADDY_DOMAIN" ]; then
-  COMPOSE_PROFILES=https docker compose up -d
-else
-  docker compose up -d
-fi
+chmod 600 .env
+sed -i 's/\r$//' entrypoint.sh
+docker compose up -d --build
 REMOTE
 
 # ---------------------------------------------------------------------------
 # Firewall
 # ---------------------------------------------------------------------------
 echo "[+] Configuring firewall..."
-ssh -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    root@"$IP" bash -s -- "${CADDY_DOMAIN:-}" <<'REMOTE'
-CADDY_DOMAIN="$1"
+ssh "${SSH_OPTS[@]}" root@"$IP" bash -s -- "$DOMAIN" <<'REMOTE'
+set -euo pipefail
 ufw allow 22/tcp
-if [ -n "$CADDY_DOMAIN" ]; then
+if [ -n "$1" ]; then
   ufw allow 80/tcp
   ufw allow 443/tcp
 else
@@ -211,18 +198,14 @@ ufw --force enable
 REMOTE
 
 # ---------------------------------------------------------------------------
-# Wait for Paperclip and extract invite URL
+# Wait for the bootstrap invite
 # ---------------------------------------------------------------------------
-echo "[+] Waiting for Paperclip to start (this takes 2-3 minutes for the first build)..."
+echo "[+] Waiting for Paperclip to start..."
 INVITE=""
 for i in $(seq 1 24); do
-  INVITE=$(ssh -o StrictHostKeyChecking=no \
-               -o UserKnownHostsFile=/dev/null \
-               root@"$IP" \
-               "docker logs paperclip 2>&1 | grep -Eo 'https?://[^ ]*invite[^ ]*' | tail -n1" 2>/dev/null || true)
-  if [ -n "$INVITE" ]; then
-    break
-  fi
+  INVITE=$(ssh "${SSH_OPTS[@]}" root@"$IP" \
+    "docker logs paperclip 2>&1 | grep -Eo 'https?://[^ ]*/invite/[^ ]*' | tail -n1" 2>/dev/null || true)
+  [ -n "$INVITE" ] && break
   echo "    waiting... (${i}/24)"
   sleep 15
 done
@@ -232,22 +215,25 @@ echo "========================================="
 echo "  Paperclip deployed"
 echo "========================================="
 echo "  IP:         $IP"
-echo "  URL:        ${PUBLIC_URL}"
+echo "  URL:        $PUBLIC_URL"
 echo "  Admin SSH:  ssh root@$IP"
 echo "========================================="
-if [ -n "${INVITE:-}" ]; then
+if [ -n "$INVITE" ]; then
   echo "  Invite URL: $INVITE"
 else
-  echo "  Invite URL: not yet available — run:"
+  echo "  Invite URL: not yet available. Run:"
   echo "  ssh root@$IP \"docker logs paperclip 2>&1 | grep invite\""
 fi
+echo "  Sign-up closes automatically once the admin account is created."
 echo "========================================="
-echo "  After sign-up, run:"
-echo "  ssh root@$IP 'sed -i s/PAPERCLIP_AUTH_DISABLE_SIGN_UP=.*/PAPERCLIP_AUTH_DISABLE_SIGN_UP=true/ /opt/paperclip/.env && cd /opt/paperclip && docker compose up -d'"
-echo "  To add LLM keys: ssh root@$IP, then: nano /opt/paperclip/.env && cd /opt/paperclip && docker compose up -d"
-if [ -n "${CADDY_DOMAIN:-}" ]; then
-echo ""
-echo "  DNS: ensure ${CADDY_DOMAIN} points to ${IP}"
-echo "  Caddy will auto-provision HTTPS on first request"
+echo "  To change settings: ssh root@$IP, edit /opt/paperclip/.env,"
+echo "  then: cd /opt/paperclip && docker compose up -d"
+if [ -n "$DOMAIN" ]; then
+  echo ""
+  echo "  DNS: ensure ${DOMAIN} points to ${IP}"
+  echo "  Caddy provisions HTTPS on the first request"
+else
+  echo ""
+  echo "  WARNING: IP-only mode serves plain HTTP. Use a domain for anything beyond testing."
 fi
 echo "========================================="
