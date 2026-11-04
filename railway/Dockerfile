@@ -1,5 +1,4 @@
 FROM ghcr.io/paperclipai/paperclip:latest
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-EXPOSE 3100
-ENTRYPOINT ["/entrypoint.sh"]
+RUN mv /usr/local/bin/docker-entrypoint.sh /usr/local/bin/upstream-entrypoint.sh
+COPY --chmod=755 entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENV PAPERCLIP_DEPLOYMENT_EXPOSURE=public
